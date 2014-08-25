@@ -1,6 +1,7 @@
 (ns riak-mesos.scheduler
   (:require [clj-mesos.scheduler]
             [riak-mesos.rest])
+  (:use [clojure.tools.nrepl.server :only  (start-server stop-server)])
   (:gen-class))
 
 (def garbage-hack "I hate this")
@@ -12,6 +13,11 @@
         ;;this contains pairs of [executor-id slave-id]
         active-executors (atom #{})
         slave-id->host+exec (atom {})]
+    (def active-executors active-executors)
+    (def slave-id->host+exec slave-id->host+exec)
+    (def used-hosts used-hosts)
+    (def pending pending)
+    (def running running)
     (clj-mesos.scheduler/scheduler
       (statusUpdate [driver status]
                     (future
@@ -24,6 +30,8 @@
                                     slave (:slave-id status)
                                     command ["riak-admin" "join" "-f" (str "riak@" (get-in @slave-id->host+exec [slave-id :hostname]))]]
                                 (println "sending command" command "to" executor slave)
+                                (Thread/sleep 3000)
+                                (clj-mesos.scheduler/send-framework-message driver executor slave (.getBytes (pr-str ["riak" "ping"])))
                                 (Thread/sleep 30000)
                                 (println "sent")
                                 (clj-mesos.scheduler/send-framework-message driver executor slave (.getBytes (pr-str command))))))
@@ -49,8 +57,8 @@
                                     :let [{:keys [cpus mem]} (:resources offer)
                                           node (first @pending)]]
                               (if (and node
-                                       (>= cpus 1.0)
-                                       (>= mem 200.0)
+                                       (>= cpus 2.0)
+                                       (>= mem 3000.0)
                                        (not (contains? @used-hosts (:hostname offer))))
                                 (do (swap! pending disj node)
                                     (swap! running conj node)
@@ -63,8 +71,8 @@
                                       (doto [{:name "Riak"
                                         :task-id (str "riak-node-" node)
                                         :slave-id (:slave-id offer)
-                                        :resources {:cpus 1.0
-                                                    :mem 200.0}
+                                        :resources {:cpus 2.0
+                                                    :mem 3000.0}
                                         ;:container {:type :docker :docker "rtward/riak-mesos"}
                                         ;:command {:shell false}
                                         :executor {:executor-id (str "riak-node-executor-" node)
@@ -72,10 +80,7 @@
                                                                :docker "rtward/riak-mesos"
                                                                :volumes [{:container-path "/usr/local/lib/mesos"
                                                                           :host-path "/usr/local/lib"
-                                                                          :mode :ro}
-                                                                         {:container-path "/var/log/riak-executor"
-                                                                          :host-path "/var/log/riak-executor"
-                                                                          :mode :rw} ]}
+                                                                          :mode :ro}]}
                                                    :command {:shell false}}
                                         }] (println "launch-exec-info"))))
                                 (clj-mesos.scheduler/decline-offer driver (:id offer))))
@@ -91,6 +96,7 @@
                                            {:user ""
                                             :name "riak"}
                                            master)]
+    (future (start-server :port 8090))
     (def the-magic-driver driver)
     (clj-mesos.scheduler/start driver)
     (riak-mesos.rest/start-server pending running 8081)
